@@ -38,7 +38,8 @@ CORS(app)
 _ORACLE_CACHE: Dict[str, OracleClient] = {}
 _ORACLE_LOCK = threading.Lock()
 _USED_FEE_TX: set[str] = set()
-_USED_FEE_TX_LOCK = threading.Lock()
+_WALLET_RUN_CREDITS: Dict[str, int] = {}
+_FEE_STATE_LOCK = threading.Lock()
 
 BASE_SEPOLIA_CHAIN_ID_HEX = "0x14a34"
 BASE_SEPOLIA_CHAIN_ID_INT = int(BASE_SEPOLIA_CHAIN_ID_HEX, 16)
@@ -48,6 +49,7 @@ OPG_TOKEN_ADDRESS = Web3.to_checksum_address(
 )
 OPG_FEE_AMOUNT = Decimal(os.getenv("OPG_FEE_AMOUNT", "0.0001"))
 OPG_FEE_WEI = int(OPG_FEE_AMOUNT * Decimal(10**18))
+RUNS_PER_FEE_TX = max(1, int(os.getenv("RUNS_PER_FEE_TX", "10")))
 FEE_TX_LOOKUP_TIMEOUT_SEC = float(os.getenv("FEE_TX_LOOKUP_TIMEOUT_SEC", "45"))
 FEE_TX_LOOKUP_POLL_SEC = float(os.getenv("FEE_TX_LOOKUP_POLL_SEC", "1.5"))
 
@@ -130,13 +132,11 @@ def _wait_for_receipt(tx_hash: str):
     raise ValueError(f"fee receipt not found after waiting {FEE_TX_LOOKUP_TIMEOUT_SEC:.0f}s ({detail})")
 
 
-def _require_fee_payment(payload: dict) -> tuple[str, str]:
+def _require_fee_payment(payload: dict) -> tuple[str, str, int, bool]:
     wallet_address_raw = str(payload.get("wallet_address") or "").strip()
     fee_tx_hash_raw = str(payload.get("fee_tx_hash") or "").strip()
     if not wallet_address_raw:
         raise ValueError("wallet_address is required")
-    if not fee_tx_hash_raw:
-        raise ValueError("fee_tx_hash is required")
     if not OPG_FEE_RECEIVER:
         raise RuntimeError(
             "Fee configuration missing on server. "
@@ -144,11 +144,21 @@ def _require_fee_payment(payload: dict) -> tuple[str, str]:
         )
 
     wallet_address = Web3.to_checksum_address(wallet_address_raw)
+
+    with _FEE_STATE_LOCK:
+        existing = _WALLET_RUN_CREDITS.get(wallet_address, 0)
+        if existing > 0:
+            remaining = existing - 1
+            _WALLET_RUN_CREDITS[wallet_address] = remaining
+            return wallet_address, "", remaining, False
+
+    if not fee_tx_hash_raw:
+        raise ValueError("No remaining runs. fee_tx_hash is required")
     if not fee_tx_hash_raw.startswith("0x") or len(fee_tx_hash_raw) != 66:
         raise ValueError("fee_tx_hash must be a valid transaction hash")
     fee_tx_hash = fee_tx_hash_raw.lower()
 
-    with _USED_FEE_TX_LOCK:
+    with _FEE_STATE_LOCK:
         if fee_tx_hash in _USED_FEE_TX:
             raise ValueError("fee_tx_hash was already used")
 
@@ -184,9 +194,11 @@ def _require_fee_payment(payload: dict) -> tuple[str, str]:
     if not paid_ok:
         raise ValueError("fee payment not found in transaction logs")
 
-    with _USED_FEE_TX_LOCK:
+    with _FEE_STATE_LOCK:
         _USED_FEE_TX.add(fee_tx_hash)
-    return wallet_address, fee_tx_hash
+        remaining = RUNS_PER_FEE_TX - 1
+        _WALLET_RUN_CREDITS[wallet_address] = _WALLET_RUN_CREDITS.get(wallet_address, 0) + remaining
+    return wallet_address, fee_tx_hash, remaining, True
 
 
 @app.route("/")
@@ -209,6 +221,7 @@ def api_ping():
             "fee_amount_opg": str(OPG_FEE_AMOUNT),
             "fee_receiver": OPG_FEE_RECEIVER,
             "fee_chain_id": BASE_SEPOLIA_CHAIN_ID_HEX,
+            "runs_per_fee_tx": RUNS_PER_FEE_TX,
         }
     )
 
@@ -225,7 +238,7 @@ def api_ask():
         return jsonify({"ok": False, "error": "question is required"}), 400
 
     try:
-        wallet_address, fee_tx_hash = _require_fee_payment(data)
+        wallet_address, fee_tx_hash, remaining_runs, paid_now = _require_fee_payment(data)
         root = parse_root(data.get("root"))
         oracle = get_oracle(model)
         result = run_ask(oracle=oracle, root=root, question=question, max_files=max_files)
@@ -240,6 +253,8 @@ def api_ask():
                 "planner_files": result.planner_files,
                 "wallet_address": wallet_address,
                 "fee_tx_hash": fee_tx_hash,
+                "remaining_runs": remaining_runs,
+                "paid_now": paid_now,
             }
         )
     except ValueError as exc:
@@ -255,7 +270,7 @@ def api_review():
     model = str(data.get("model") or "").strip() or None
 
     try:
-        wallet_address, fee_tx_hash = _require_fee_payment(data)
+        wallet_address, fee_tx_hash, remaining_runs, paid_now = _require_fee_payment(data)
         root = parse_root(data.get("root"))
         oracle = get_oracle(model)
         result = run_review(oracle=oracle, root=root, target=target)
@@ -270,6 +285,8 @@ def api_review():
                 "target": target,
                 "wallet_address": wallet_address,
                 "fee_tx_hash": fee_tx_hash,
+                "remaining_runs": remaining_runs,
+                "paid_now": paid_now,
             }
         )
     except ValueError as exc:

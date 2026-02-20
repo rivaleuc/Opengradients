@@ -19,9 +19,11 @@
   - `OPENGRADIENT_PRIVATE_KEY` (alias)
   - `~/.opengradient_config.json` (`private_key`)
 - Wallet fee gate:
-  - Ask/Review requires `0.0001 OPG` per request on Base Sepolia
+  - Ask/Review uses credit packs on Base Sepolia:
+    - 1 payment of `0.0001 OPG` unlocks 10 runs
   - Optional env overrides:
     - `OPG_FEE_AMOUNT` (default `0.0001`)
+    - `RUNS_PER_FEE_TX` (default `10`)
     - `OPG_FEE_RECEIVER` (default: backend wallet)
     - `OPG_TOKEN_ADDRESS` (default OPG token on Base Sepolia)
 

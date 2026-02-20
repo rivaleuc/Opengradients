@@ -38,6 +38,8 @@ const state = {
   feeRequired: true,
   feeAmountOpg: "0.0001",
   feeAmountWei: 100000000000000n,
+  runsPerFeeTx: 10,
+  remainingRuns: 0,
   feeToken: "",
   feeReceiver: "",
   feeChainId: BASE_SEPOLIA_CHAIN_ID,
@@ -53,11 +55,17 @@ function walletMetaSuffix() {
 }
 
 function feeMetaSuffix() {
-  return ` | Fee: ${state.feeAmountOpg} OPG/run`;
+  return ` | Fee: ${state.feeAmountOpg} OPG/${state.runsPerFeeTx} runs | Credits: ${state.remainingRuns}`;
 }
 
 function isWalletReady() {
   return Boolean(state.walletAddress) && state.walletChainId === BASE_SEPOLIA_CHAIN_ID;
+}
+
+function syncRemainingRuns(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return;
+  state.remainingRuns = Math.max(0, Math.floor(n));
 }
 
 function refreshAccessGate() {
@@ -86,8 +94,12 @@ function setWalletInfo(text, good = true) {
 }
 
 function applyWalletState(address, chainId) {
+  const prevWallet = state.walletAddress;
   state.walletAddress = address || "";
   state.walletChainId = chainId || "";
+  if (!state.walletAddress || (prevWallet && prevWallet.toLowerCase() !== state.walletAddress.toLowerCase())) {
+    state.remainingRuns = 0;
+  }
 
   const connected = Boolean(state.walletAddress);
   const onBaseSepolia = connected && state.walletChainId === BASE_SEPOLIA_CHAIN_ID;
@@ -95,7 +107,7 @@ function applyWalletState(address, chainId) {
   if (!connected) {
     walletBtn.textContent = "Connect Wallet";
     setWalletBadge("Not connected", "neutral");
-    setWalletInfo(`Network: Base Sepolia (required) | Fee: ${state.feeAmountOpg} OPG/run`, true);
+    setWalletInfo(`Network: Base Sepolia (required) | Fee: ${state.feeAmountOpg} OPG per ${state.runsPerFeeTx} runs`, true);
     refreshAccessGate();
     return;
   }
@@ -103,7 +115,10 @@ function applyWalletState(address, chainId) {
   walletBtn.textContent = "Disconnect";
   if (onBaseSepolia) {
     setWalletBadge(shortenAddress(state.walletAddress), "connected");
-    setWalletInfo(`Connected on Base Sepolia: ${state.walletAddress} | Fee: ${state.feeAmountOpg} OPG/run`, true);
+    setWalletInfo(
+      `Connected on Base Sepolia: ${state.walletAddress} | Credits left: ${state.remainingRuns}`,
+      true
+    );
   } else {
     setWalletBadge("Wrong network", "error");
     setWalletInfo(`Switch to Base Sepolia. Current chain: ${state.walletChainId || "unknown"}`, false);
@@ -203,7 +218,7 @@ async function payFeeAndGetTxHash() {
     data: encodeErc20Transfer(state.feeReceiver, state.feeAmountWei),
   };
 
-  setStatus(`Paying ${state.feeAmountOpg} OPG fee...`, true);
+  setStatus(`Paying ${state.feeAmountOpg} OPG for ${state.runsPerFeeTx} runs...`, true);
   const txHash = await window.ethereum.request({
     method: "eth_sendTransaction",
     params: [tx],
@@ -212,6 +227,16 @@ async function payFeeAndGetTxHash() {
   setStatus("Waiting fee confirmation...", true);
   await waitForReceipt(txHash);
   return txHash;
+}
+
+async function ensureFeeForRun() {
+  if (!state.feeRequired) return "";
+  if (state.remainingRuns > 0) {
+    state.remainingRuns -= 1;
+    setStatus(`Using prepaid credit (${state.remainingRuns} left)...`, true);
+    return "";
+  }
+  return payFeeAndGetTxHash();
 }
 
 async function ensureBaseSepolia() {
@@ -339,6 +364,8 @@ async function boot() {
     state.feeRequired = Boolean(data.fee_required);
     state.feeAmountOpg = String(data.fee_amount_opg || "0.0001");
     state.feeAmountWei = parseAmountToWei(state.feeAmountOpg, 18);
+    state.runsPerFeeTx = Math.max(1, Number(data.runs_per_fee_tx || 10));
+    state.remainingRuns = 0;
     state.feeToken = String(data.fee_token || "").trim();
     state.feeReceiver = String(data.fee_receiver || "").trim();
     state.feeChainId = String(data.fee_chain_id || BASE_SEPOLIA_CHAIN_ID).toLowerCase();
@@ -352,7 +379,7 @@ async function boot() {
 }
 
 async function runAsk() {
-  const feeTxHash = await payFeeAndGetTxHash();
+  const feeTxHash = await ensureFeeForRun();
 
   const payload = {
     root: rootInput.value.trim(),
@@ -361,8 +388,8 @@ async function runAsk() {
     max_files: Number(maxFilesInput.value || 8),
     wallet_address: state.walletAddress || "",
     wallet_chain_id: state.walletChainId || "",
-    fee_tx_hash: feeTxHash,
   };
+  if (feeTxHash) payload.fee_tx_hash = feeTxHash;
 
   if (!payload.question) {
     throw new Error("Question is required.");
@@ -378,6 +405,8 @@ async function runAsk() {
     throw new Error(data.error || `Ask failed (${res.status})`);
   }
 
+  syncRemainingRuns(data.remaining_runs);
+  setWalletInfo(`Connected on Base Sepolia: ${state.walletAddress} | Credits left: ${state.remainingRuns}`, true);
   metaBox.textContent = `Mode: ask | Model: ${data.model} | Root: ${data.root}${feeMetaSuffix()}${walletMetaSuffix()}`;
   renderPlanner(data.planner_files || [], data.planner_focus || "");
   outputBox.textContent = data.answer || "(empty answer)";
@@ -385,7 +414,7 @@ async function runAsk() {
 }
 
 async function runReview() {
-  const feeTxHash = await payFeeAndGetTxHash();
+  const feeTxHash = await ensureFeeForRun();
 
   const payload = {
     root: rootInput.value.trim(),
@@ -393,8 +422,8 @@ async function runReview() {
     target: targetInput.value.trim(),
     wallet_address: state.walletAddress || "",
     wallet_chain_id: state.walletChainId || "",
-    fee_tx_hash: feeTxHash,
   };
+  if (feeTxHash) payload.fee_tx_hash = feeTxHash;
 
   const res = await fetch("/api/review", {
     method: "POST",
@@ -406,6 +435,8 @@ async function runReview() {
     throw new Error(data.error || `Review failed (${res.status})`);
   }
 
+  syncRemainingRuns(data.remaining_runs);
+  setWalletInfo(`Connected on Base Sepolia: ${state.walletAddress} | Credits left: ${state.remainingRuns}`, true);
   metaBox.textContent = `Mode: review | Model: ${data.model} | Root: ${data.root} | Target: ${data.target || "working tree"}${feeMetaSuffix()}${walletMetaSuffix()}`;
   if (data.diff_empty) {
     plannerBox.textContent = "No git diff found for this target.";
@@ -437,9 +468,13 @@ async function handleRun() {
     }
     setStatus("Done", true);
   } catch (err) {
+    const msg = String(err?.message || err);
+    if (msg.includes("No remaining runs. fee_tx_hash is required")) {
+      state.remainingRuns = 0;
+    }
     setStatus("Failed", false);
     plannerBox.textContent = "";
-    outputBox.textContent = String(err.message || err);
+    outputBox.textContent = msg;
   } finally {
     setBusy(false);
   }
