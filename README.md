@@ -16,6 +16,7 @@
 - Dependencies in `requirements.txt`
 - OpenGradient private key in one of:
   - `OG_PRIVATE_KEY`
+  - `OPENGRADIENT_PRIVATE_KEY` (alias)
   - `~/.opengradient_config.json` (`private_key`)
 - Wallet fee gate:
   - Ask/Review requires `0.0001 OPG` per request on Base Sepolia

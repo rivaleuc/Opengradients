@@ -211,9 +211,10 @@ def resolve_repo_source(root_raw: Optional[str], default_root: Optional[Path] = 
 
 
 def load_private_key() -> Optional[str]:
-    key = os.getenv("OG_PRIVATE_KEY")
-    if key:
-        return key.strip()
+    for env_name in ("OG_PRIVATE_KEY", "OPENGRADIENT_PRIVATE_KEY"):
+        key = os.getenv(env_name)
+        if key and key.strip():
+            return key.strip()
 
     cfg_path = Path.home() / ".opengradient_config.json"
     if cfg_path.exists():
@@ -230,7 +231,10 @@ def load_private_key() -> Optional[str]:
 def init_oracle_client(force_model: Optional[str] = None) -> OracleClient:
     private_key = load_private_key()
     if not private_key:
-        raise RuntimeError("Missing OG_PRIVATE_KEY and ~/.opengradient_config.json private_key")
+        raise RuntimeError(
+            "Missing OG_PRIVATE_KEY (or OPENGRADIENT_PRIVATE_KEY) and "
+            "~/.opengradient_config.json private_key"
+        )
 
     client = og.Client(private_key=private_key)
     if hasattr(client.llm, "ensure_opg_approval"):

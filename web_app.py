@@ -103,7 +103,10 @@ def _require_fee_payment(payload: dict) -> tuple[str, str]:
     if not fee_tx_hash_raw:
         raise ValueError("fee_tx_hash is required")
     if not OPG_FEE_RECEIVER:
-        raise RuntimeError("OPG_FEE_RECEIVER is not configured")
+        raise RuntimeError(
+            "Fee configuration missing on server. "
+            "Set OPG_FEE_RECEIVER or OG_PRIVATE_KEY/OPENGRADIENT_PRIVATE_KEY."
+        )
 
     wallet_address = Web3.to_checksum_address(wallet_address_raw)
     if not fee_tx_hash_raw.startswith("0x") or len(fee_tx_hash_raw) != 66:
