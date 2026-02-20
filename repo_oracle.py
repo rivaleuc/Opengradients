@@ -17,16 +17,19 @@ import fnmatch
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 import opengradient as og
+import requests
 
 
 DEFAULT_MODEL_PRIORITY = [
@@ -139,7 +142,7 @@ def _looks_like_github_source(src: str) -> bool:
     )
 
 
-def _parse_github_clone_url(src: str) -> Tuple[str, str]:
+def _parse_github_clone_url(src: str) -> Tuple[str, str, str, str]:
     if src.startswith("git@github.com:"):
         path = src.split(":", 1)[1]
     else:
@@ -159,36 +162,102 @@ def _parse_github_clone_url(src: str) -> Tuple[str, str]:
         raise ValueError("GitHub link must include owner/repo.")
     clone_url = f"https://github.com/{owner}/{repo}.git"
     slug = f"{owner}__{repo}"
-    return clone_url, slug
+    return clone_url, slug, owner, repo
 
 
 def _run_git(args: Sequence[str]) -> str:
-    proc = subprocess.run(["git", *args], text=True, capture_output=True)
+    try:
+        proc = subprocess.run(["git", *args], text=True, capture_output=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError("git command not found") from exc
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "git command failed").strip()
         raise RuntimeError(err)
     return (proc.stdout or "").strip()
 
 
+def _download_github_repo_archive(owner: str, repo: str, repo_dir: Path) -> Path:
+    cache_root = repo_dir.parent
+    extract_dir = cache_root / f"{owner}__{repo}_extract"
+    zip_path = cache_root / f"{owner}__{repo}.zip"
+    urls = [
+        f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/main",
+        f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/master",
+    ]
+
+    last_error: Optional[Exception] = None
+    for url in urls:
+        try:
+            with requests.get(url, timeout=40) as resp:
+                resp.raise_for_status()
+                with zip_path.open("wb") as f:
+                    f.write(resp.content)
+            last_error = None
+            break
+        except Exception as exc:
+            last_error = exc
+            continue
+
+    if last_error is not None:
+        raise RuntimeError(f"Failed to download GitHub archive for {owner}/{repo}: {last_error}") from last_error
+
+    if extract_dir.exists():
+        shutil.rmtree(extract_dir)
+    extract_dir.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(extract_dir)
+
+    roots = [p for p in extract_dir.iterdir() if p.is_dir()]
+    if not roots:
+        raise RuntimeError("Downloaded archive does not contain repository files.")
+    source_root = roots[0]
+
+    if repo_dir.exists():
+        shutil.rmtree(repo_dir)
+    shutil.move(str(source_root), str(repo_dir))
+
+    try:
+        zip_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    try:
+        shutil.rmtree(extract_dir)
+    except Exception:
+        pass
+    return repo_dir
+
+
 def _ensure_github_repo_local(src: str) -> Path:
-    clone_url, slug = _parse_github_clone_url(src)
+    clone_url, slug, owner, repo = _parse_github_clone_url(src)
     cache_root = Path(tempfile.gettempdir()) / "repo_oracle_cache"
     cache_root.mkdir(parents=True, exist_ok=True)
     repo_dir = cache_root / slug
 
-    if (repo_dir / ".git").exists():
+    if shutil.which("git"):
+        if (repo_dir / ".git").exists():
+            try:
+                _run_git(["-C", str(repo_dir), "pull", "--ff-only"])
+            except Exception:
+                # Keep existing local cache if remote update fails.
+                pass
+            return repo_dir
+
+        if repo_dir.exists():
+            # Could be a previous archive fallback cache.
+            return repo_dir
+
         try:
-            _run_git(["-C", str(repo_dir), "pull", "--ff-only"])
+            _run_git(["clone", "--depth", "1", clone_url, str(repo_dir)])
+            return repo_dir
         except Exception:
-            # Keep existing local cache if remote update fails.
-            pass
-        return repo_dir
+            # Fall back to archive mode if git clone fails in this environment.
+            return _download_github_repo_archive(owner, repo, repo_dir)
 
+    # Environments like Vercel might not have git binary.
     if repo_dir.exists():
-        raise RuntimeError(f"Cache path exists but is not a git repository: {repo_dir}")
-
-    _run_git(["clone", "--depth", "1", clone_url, str(repo_dir)])
-    return repo_dir
+        return repo_dir
+    return _download_github_repo_archive(owner, repo, repo_dir)
 
 
 def resolve_repo_source(root_raw: Optional[str], default_root: Optional[Path] = None) -> Path:
@@ -467,6 +536,9 @@ def run_ask(oracle: OracleClient, root: Path, question: str, max_files: int) -> 
 
 
 def git_diff_text(root: Path, target: str) -> str:
+    if shutil.which("git") is None:
+        return ""
+
     cmd = ["git", "-C", str(root), "diff", "--unified=0"]
     clean_target = (target or "").strip()
     if clean_target:
