@@ -239,6 +239,10 @@ h1 {
   gap: 16px;
 }
 
+.workspace.no-status {
+  grid-template-columns: 1fr;
+}
+
 .wallet-lock-overlay {
   position: absolute;
   inset: 0;
