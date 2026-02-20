@@ -45,7 +45,7 @@
         </div>
       </header>
 
-      <section class="workspace no-status">
+      <section class="workspace">
         <div id="walletLockOverlay" class="wallet-lock-overlay">
           <p class="lock-eyebrow">Wallet Required</p>
           <h3>Connect your EVM wallet before using the tool</h3>
@@ -91,14 +91,14 @@
           <button id="runBtn" class="run-btn" type="button">Run AI Analysis</button>
         </aside>
 
-        <section class="result-card card reveal delay-2 hidden">
+        <section class="result-card card reveal delay-2">
           <div class="result-head">
-            <h2>Run Status</h2>
+            <h2>Output</h2>
           </div>
 
           <div class="meta" id="metaBox">No run yet.</div>
-          <div class="planner" id="plannerBox">AI output is hidden on the website (backend-only mode).</div>
-          <pre id="outputBox" class="output">Run Ask/Review. Result content will be stored on the backend only.</pre>
+          <div class="planner" id="plannerBox"></div>
+          <pre id="outputBox" class="output">Run Ask/Review to get the AI answer.</pre>
         </section>
       </section>
     </main>
