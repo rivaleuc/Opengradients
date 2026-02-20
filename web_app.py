@@ -242,15 +242,14 @@ def api_ask():
         root = parse_root(data.get("root"))
         oracle = get_oracle(model)
         result = run_ask(oracle=oracle, root=root, question=question, max_files=max_files)
+        print(f"[ASK] model={result.model_name} wallet={wallet_address} root={root}")
         return jsonify(
             {
                 "ok": True,
                 "mode": "ask",
                 "model": result.model_name,
                 "root": str(root),
-                "answer": result.answer,
-                "planner_focus": result.planner_focus,
-                "planner_files": result.planner_files,
+                "output_hidden": True,
                 "wallet_address": wallet_address,
                 "fee_tx_hash": fee_tx_hash,
                 "remaining_runs": remaining_runs,
@@ -274,6 +273,9 @@ def api_review():
         root = parse_root(data.get("root"))
         oracle = get_oracle(model)
         result = run_review(oracle=oracle, root=root, target=target)
+        print(
+            f"[REVIEW] model={result.model_name} wallet={wallet_address} root={root} diff_empty={result.diff_empty}"
+        )
         return jsonify(
             {
                 "ok": True,
@@ -281,7 +283,7 @@ def api_review():
                 "model": result.model_name,
                 "root": str(root),
                 "diff_empty": result.diff_empty,
-                "answer": result.answer,
+                "output_hidden": True,
                 "target": target,
                 "wallet_address": wallet_address,
                 "fee_tx_hash": fee_tx_hash,

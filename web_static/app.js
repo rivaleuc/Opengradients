@@ -408,9 +408,9 @@ async function runAsk() {
   syncRemainingRuns(data.remaining_runs);
   setWalletInfo(`Connected on Base Sepolia: ${state.walletAddress} | Credits left: ${state.remainingRuns}`, true);
   metaBox.textContent = `Mode: ask | Model: ${data.model} | Root: ${data.root}${feeMetaSuffix()}${walletMetaSuffix()}`;
-  renderPlanner(data.planner_files || [], data.planner_focus || "");
-  outputBox.textContent = data.answer || "(empty answer)";
-  state.lastOutput = outputBox.textContent;
+  plannerBox.textContent = "Ask completed. Output hidden on website (backend-only).";
+  outputBox.textContent = "Ask run successful. Check backend logs/storage for full output.";
+  state.lastOutput = "";
 }
 
 async function runReview() {
@@ -438,14 +438,11 @@ async function runReview() {
   syncRemainingRuns(data.remaining_runs);
   setWalletInfo(`Connected on Base Sepolia: ${state.walletAddress} | Credits left: ${state.remainingRuns}`, true);
   metaBox.textContent = `Mode: review | Model: ${data.model} | Root: ${data.root} | Target: ${data.target || "working tree"}${feeMetaSuffix()}${walletMetaSuffix()}`;
-  if (data.diff_empty) {
-    plannerBox.textContent = "No git diff found for this target.";
-    outputBox.textContent = "No diff to review.";
-  } else {
-    plannerBox.textContent = "AI review completed over provided git diff.";
-    outputBox.textContent = data.answer || "(empty review)";
-  }
-  state.lastOutput = outputBox.textContent;
+  plannerBox.textContent = data.diff_empty
+    ? "Review completed (no diff found). Output hidden on website."
+    : "Review completed. Output hidden on website (backend-only).";
+  outputBox.textContent = "Review run successful. Check backend logs/storage for full output.";
+  state.lastOutput = "";
 }
 
 async function handleRun() {
@@ -493,7 +490,10 @@ async function copyOutput() {
 tabAsk.addEventListener("click", () => setMode("ask"));
 tabReview.addEventListener("click", () => setMode("review"));
 runBtn.addEventListener("click", handleRun);
-copyBtn.addEventListener("click", copyOutput);
+if (copyBtn) {
+  copyBtn.style.display = "none";
+  copyBtn.addEventListener("click", copyOutput);
+}
 walletBtn.addEventListener("click", connectWallet);
 walletOverlayBtn.addEventListener("click", connectWallet);
 
