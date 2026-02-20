@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Repo Oracle Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="bg-grid" aria-hidden="true"></div>
+    <div class="glow glow-a" aria-hidden="true"></div>
+    <div class="glow glow-b" aria-hidden="true"></div>
+
+    <main class="page">
+      <header class="hero card reveal">
+        <div class="hero-main">
+          <p class="eyebrow">AI-First Engineering Tool</p>
+          <h1>Repo Oracle Studio</h1>
+          <p class="sub">Deep repository analysis with a planner-to-analyst pipeline and sharp diff reviews.</p>
+          <div class="pipeline" aria-hidden="true">
+            <span>Planner</span>
+            <span class="dot"></span>
+            <span>Analyst</span>
+            <span class="dot"></span>
+            <span>Reviewer</span>
+          </div>
+        </div>
+        <div class="hero-side">
+          <div class="status" id="statusPill">Booting...</div>
+          <p class="mini">Local path or GitHub URL. Model does the heavy lifting.</p>
+          <div class="wallet-card">
+            <div class="wallet-row">
+              <span class="wallet-label">EVM Wallet</span>
+              <span id="walletBadge" class="wallet-badge">Not connected</span>
+            </div>
+            <button id="walletBtn" class="wallet-btn" type="button">Connect Wallet</button>
+            <p id="walletInfo" class="wallet-info">Network: Base Sepolia (required)</p>
+          </div>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <div id="walletLockOverlay" class="wallet-lock-overlay">
+          <p class="lock-eyebrow">Wallet Required</p>
+          <h3>Connect your EVM wallet before using the tool</h3>
+          <p>Access unlocks only on Base Sepolia. Each Ask/Review costs 0.0001 OPG.</p>
+          <button id="walletOverlayBtn" class="wallet-overlay-btn" type="button">Connect Wallet</button>
+        </div>
+
+        <aside class="control-card card reveal delay-1">
+          <p class="panel-title">Control Panel</p>
+          <div class="mode-tabs">
+            <button id="tabAsk" class="tab active" type="button">Ask</button>
+            <button id="tabReview" class="tab" type="button">Review</button>
+          </div>
+
+          <label>
+            Repository Source
+            <input id="rootInput" type="text" placeholder="/path/to/repo OR https://github.com/owner/repo" />
+          </label>
+
+          <label>
+            Model (optional)
+            <input id="modelInput" type="text" placeholder="GPT_4O or model CID" />
+          </label>
+
+          <label id="questionWrap">
+            Question
+            <textarea id="questionInput" rows="8" placeholder="How does auth/session flow work end-to-end?"></textarea>
+          </label>
+
+          <div id="reviewWrap" class="hidden">
+            <label>
+              Diff Target
+              <input id="targetInput" type="text" placeholder="HEAD~1 (optional)" />
+            </label>
+            <p class="hint">Leave empty to review working tree diff.</p>
+          </div>
+
+          <label id="maxFilesWrap">
+            Max Files
+            <input id="maxFilesInput" type="number" min="1" max="20" value="8" />
+          </label>
+
+          <button id="runBtn" class="run-btn" type="button">Run AI Analysis</button>
+        </aside>
+
+        <section class="result-card card reveal delay-2">
+          <div class="result-head">
+            <h2>Output</h2>
+            <button id="copyBtn" type="button" class="ghost">Copy</button>
+          </div>
+
+          <div class="meta" id="metaBox">No run yet.</div>
+          <div class="planner" id="plannerBox"></div>
+          <pre id="outputBox" class="output">Start by running an Ask or Review analysis.</pre>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,3 @@
+opengradient>=0.7.1
+flask
+flask-cors
