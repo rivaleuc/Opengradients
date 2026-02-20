@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from decimal import Decimal
 from pathlib import Path
 from typing import Dict
@@ -47,6 +48,8 @@ OPG_TOKEN_ADDRESS = Web3.to_checksum_address(
 )
 OPG_FEE_AMOUNT = Decimal(os.getenv("OPG_FEE_AMOUNT", "0.0001"))
 OPG_FEE_WEI = int(OPG_FEE_AMOUNT * Decimal(10**18))
+FEE_TX_LOOKUP_TIMEOUT_SEC = float(os.getenv("FEE_TX_LOOKUP_TIMEOUT_SEC", "45"))
+FEE_TX_LOOKUP_POLL_SEC = float(os.getenv("FEE_TX_LOOKUP_POLL_SEC", "1.5"))
 
 
 def resolve_fee_receiver() -> str:
@@ -95,6 +98,38 @@ def _hex_to_int(raw: object) -> int:
     return int(raw or 0)
 
 
+def _wait_for_transaction(tx_hash: str):
+    deadline = time.time() + FEE_TX_LOOKUP_TIMEOUT_SEC
+    last_exc: Exception | None = None
+    while time.time() < deadline:
+        try:
+            tx = W3_BASE.eth.get_transaction(tx_hash)
+            if tx:
+                return tx
+        except Exception as exc:
+            last_exc = exc
+        time.sleep(FEE_TX_LOOKUP_POLL_SEC)
+
+    detail = f"last error: {last_exc}" if last_exc else "not propagated to RPC yet"
+    raise ValueError(f"fee transaction not found after waiting {FEE_TX_LOOKUP_TIMEOUT_SEC:.0f}s ({detail})")
+
+
+def _wait_for_receipt(tx_hash: str):
+    deadline = time.time() + FEE_TX_LOOKUP_TIMEOUT_SEC
+    last_exc: Exception | None = None
+    while time.time() < deadline:
+        try:
+            receipt = W3_BASE.eth.get_transaction_receipt(tx_hash)
+            if receipt:
+                return receipt
+        except Exception as exc:
+            last_exc = exc
+        time.sleep(FEE_TX_LOOKUP_POLL_SEC)
+
+    detail = f"last error: {last_exc}" if last_exc else "receipt unavailable"
+    raise ValueError(f"fee receipt not found after waiting {FEE_TX_LOOKUP_TIMEOUT_SEC:.0f}s ({detail})")
+
+
 def _require_fee_payment(payload: dict) -> tuple[str, str]:
     wallet_address_raw = str(payload.get("wallet_address") or "").strip()
     fee_tx_hash_raw = str(payload.get("fee_tx_hash") or "").strip()
@@ -117,12 +152,7 @@ def _require_fee_payment(payload: dict) -> tuple[str, str]:
         if fee_tx_hash in _USED_FEE_TX:
             raise ValueError("fee_tx_hash was already used")
 
-    try:
-        tx = W3_BASE.eth.get_transaction(fee_tx_hash)
-    except Exception as exc:
-        raise ValueError(f"fee transaction lookup failed: {exc}") from exc
-    if not tx:
-        raise ValueError("fee transaction not found")
+    tx = _wait_for_transaction(fee_tx_hash)
 
     tx_from = Web3.to_checksum_address(tx["from"])
     if tx_from != wallet_address:
@@ -130,12 +160,7 @@ def _require_fee_payment(payload: dict) -> tuple[str, str]:
     if tx.get("chainId") and int(tx["chainId"]) != BASE_SEPOLIA_CHAIN_ID_INT:
         raise ValueError("fee tx is not on Base Sepolia")
 
-    try:
-        receipt = W3_BASE.eth.get_transaction_receipt(fee_tx_hash)
-    except Exception as exc:
-        raise ValueError(f"fee receipt lookup failed: {exc}") from exc
-    if not receipt:
-        raise ValueError("fee transaction receipt not found")
+    receipt = _wait_for_receipt(fee_tx_hash)
     if int(receipt.get("status", 0)) != 1:
         raise ValueError("fee transaction failed")
 
