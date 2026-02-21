@@ -73,6 +73,27 @@ function syncRemainingRuns(raw) {
   state.remainingRuns = Math.max(0, Math.floor(n));
 }
 
+async function refreshCreditsFromServer() {
+  if (!state.walletAddress) {
+    state.remainingRuns = 0;
+    return;
+  }
+  try {
+    const res = await fetch(`/api/credits?wallet=${encodeURIComponent(state.walletAddress)}`);
+    const data = await res.json();
+    if (!res.ok || !data.ok) return;
+    syncRemainingRuns(data.remaining_runs);
+    if (isWalletReady()) {
+      setWalletInfo(
+        `Connected on Base Sepolia: ${state.walletAddress} | Credits left: ${state.remainingRuns}`,
+        true
+      );
+    }
+  } catch (_) {
+    // Ignore transient credit-sync failures; run flow will still validate server-side.
+  }
+}
+
 function refreshAccessGate() {
   const locked = !isWalletReady();
   document.body.classList.toggle("app-locked", locked);
@@ -285,6 +306,7 @@ async function payFeeAndGetTxHash() {
 
 async function ensureFeeForRun() {
   if (!state.feeRequired) return "";
+  await refreshCreditsFromServer();
   if (state.remainingRuns > 0) {
     state.remainingRuns -= 1;
     setStatus(`Using prepaid credit (${state.remainingRuns} left)...`, true);
@@ -344,6 +366,7 @@ async function connectWallet() {
     const account = (accounts && accounts[0]) || "";
     if (!account) throw new Error("No wallet account returned.");
     applyWalletState(account, chainId);
+    await refreshCreditsFromServer();
   } catch (err) {
     const msg = String(err?.message || err);
     setWalletBadge("Connect failed", "error");
@@ -373,6 +396,7 @@ async function handleAccountsChanged(accounts) {
     setWalletInfo(`Switch to Base Sepolia: ${msg}`, false);
   }
   applyWalletState(account, chainId);
+  await refreshCreditsFromServer();
 }
 
 function handleChainChanged(chainId) {
@@ -402,6 +426,7 @@ async function initWallet() {
       chainId = await ensureBaseSepolia();
     }
     applyWalletState(accounts[0], chainId);
+    await refreshCreditsFromServer();
   } catch (err) {
     const msg = String(err?.message || err);
     setWalletBadge("Init failed", "error");

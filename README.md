@@ -26,6 +26,10 @@
     - `RUNS_PER_FEE_TX` (default `10`)
     - `OPG_FEE_RECEIVER` (default: backend wallet)
     - `OPG_TOKEN_ADDRESS` (default OPG token on Base Sepolia)
+  - For persistent credits on Vercel (recommended):
+    - `UPSTASH_REDIS_REST_URL`
+    - `UPSTASH_REDIS_REST_TOKEN`
+    - Optional: `REDIS_KEY_PREFIX` (default `repo_oracle`)
 
 ## CLI usage
 

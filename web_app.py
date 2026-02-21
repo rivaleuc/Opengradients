@@ -15,6 +15,7 @@ from typing import Dict
 
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
+import requests
 from web3 import Web3
 
 from repo_oracle import (
@@ -37,9 +38,6 @@ CORS(app)
 
 _ORACLE_CACHE: Dict[str, OracleClient] = {}
 _ORACLE_LOCK = threading.Lock()
-_USED_FEE_TX: set[str] = set()
-_WALLET_RUN_CREDITS: Dict[str, int] = {}
-_FEE_STATE_LOCK = threading.Lock()
 
 BASE_SEPOLIA_CHAIN_ID_HEX = "0x14a34"
 BASE_SEPOLIA_CHAIN_ID_INT = int(BASE_SEPOLIA_CHAIN_ID_HEX, 16)
@@ -52,6 +50,11 @@ OPG_FEE_WEI = int(OPG_FEE_AMOUNT * Decimal(10**18))
 RUNS_PER_FEE_TX = max(1, int(os.getenv("RUNS_PER_FEE_TX", "10")))
 FEE_TX_LOOKUP_TIMEOUT_SEC = float(os.getenv("FEE_TX_LOOKUP_TIMEOUT_SEC", "45"))
 FEE_TX_LOOKUP_POLL_SEC = float(os.getenv("FEE_TX_LOOKUP_POLL_SEC", "1.5"))
+USED_TX_TTL_SEC = max(60, int(os.getenv("USED_TX_TTL_SEC", "2592000")))
+CREDITS_TTL_SEC = max(60, int(os.getenv("CREDITS_TTL_SEC", "2592000")))
+UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").strip()
+UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+REDIS_KEY_PREFIX = os.getenv("REDIS_KEY_PREFIX", "repo_oracle").strip() or "repo_oracle"
 
 
 def resolve_fee_receiver() -> str:
@@ -69,6 +72,120 @@ def resolve_fee_receiver() -> str:
 OPG_FEE_RECEIVER = resolve_fee_receiver()
 W3_BASE = Web3(Web3.HTTPProvider(BASE_SEPOLIA_RPC_URL))
 TRANSFER_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex().lower()
+
+
+class FeeStateStore:
+    def __init__(self) -> None:
+        self.redis_url = UPSTASH_REDIS_REST_URL
+        self.redis_token = UPSTASH_REDIS_REST_TOKEN
+        self._used_fee_tx: set[str] = set()
+        self._wallet_run_credits: Dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    @property
+    def mode(self) -> str:
+        if self.redis_url and self.redis_token:
+            return "redis"
+        return "memory"
+
+    def _wallet_key(self, wallet: str) -> str:
+        return f"{REDIS_KEY_PREFIX}:credits:{wallet.lower()}"
+
+    def _tx_key(self, tx_hash: str) -> str:
+        return f"{REDIS_KEY_PREFIX}:tx:{tx_hash.lower()}"
+
+    def _redis_call(self, *parts: str):
+        resp = requests.post(
+            self.redis_url,
+            headers={
+                "Authorization": f"Bearer {self.redis_token}",
+                "Content-Type": "application/json",
+            },
+            json=list(parts),
+            timeout=12,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, dict) and data.get("error"):
+            raise RuntimeError(str(data["error"]))
+        return data.get("result") if isinstance(data, dict) else None
+
+    def get_credits(self, wallet: str) -> int:
+        if self.mode == "redis":
+            raw = self._redis_call("GET", self._wallet_key(wallet))
+            if raw is None:
+                return 0
+            try:
+                return max(0, int(raw))
+            except Exception:
+                return 0
+
+        with self._lock:
+            return max(0, self._wallet_run_credits.get(wallet, 0))
+
+    def consume_credit_if_any(self, wallet: str) -> tuple[bool, int]:
+        if self.mode == "redis":
+            key = self._wallet_key(wallet)
+            remaining = int(self._redis_call("DECRBY", key, "1") or 0)
+            if remaining >= 0:
+                self._redis_call("EXPIRE", key, str(CREDITS_TTL_SEC))
+                return True, remaining
+
+            # Key was missing/zero; undo decrement to keep state non-negative.
+            self._redis_call("INCRBY", key, "1")
+            current = self.get_credits(wallet)
+            if current < 0:
+                self._redis_call("SET", key, "0", "EX", str(CREDITS_TTL_SEC))
+                current = 0
+            return False, current
+
+        with self._lock:
+            existing = self._wallet_run_credits.get(wallet, 0)
+            if existing > 0:
+                remaining = existing - 1
+                self._wallet_run_credits[wallet] = remaining
+                return True, remaining
+            return False, 0
+
+    def add_credits(self, wallet: str, amount: int) -> int:
+        amount = max(0, int(amount))
+        if self.mode == "redis":
+            key = self._wallet_key(wallet)
+            if amount > 0:
+                remaining = int(self._redis_call("INCRBY", key, str(amount)) or 0)
+            else:
+                remaining = self.get_credits(wallet)
+            self._redis_call("EXPIRE", key, str(CREDITS_TTL_SEC))
+            return max(0, remaining)
+
+        with self._lock:
+            self._wallet_run_credits[wallet] = self._wallet_run_credits.get(wallet, 0) + amount
+            return max(0, self._wallet_run_credits[wallet])
+
+    def mark_tx_if_new(self, tx_hash: str) -> bool:
+        if self.mode == "redis":
+            result = self._redis_call("SET", self._tx_key(tx_hash), "1", "NX", "EX", str(USED_TX_TTL_SEC))
+            return result == "OK"
+
+        with self._lock:
+            if tx_hash in self._used_fee_tx:
+                return False
+            self._used_fee_tx.add(tx_hash)
+            return True
+
+    def release_tx_mark(self, tx_hash: str) -> None:
+        if self.mode == "redis":
+            try:
+                self._redis_call("DEL", self._tx_key(tx_hash))
+            except Exception:
+                pass
+            return
+
+        with self._lock:
+            self._used_fee_tx.discard(tx_hash)
+
+
+FEE_STATE = FeeStateStore()
 
 
 def get_oracle(model: str | None = None) -> OracleClient:
@@ -145,12 +262,9 @@ def _require_fee_payment(payload: dict) -> tuple[str, str, int, bool]:
 
     wallet_address = Web3.to_checksum_address(wallet_address_raw)
 
-    with _FEE_STATE_LOCK:
-        existing = _WALLET_RUN_CREDITS.get(wallet_address, 0)
-        if existing > 0:
-            remaining = existing - 1
-            _WALLET_RUN_CREDITS[wallet_address] = remaining
-            return wallet_address, "", remaining, False
+    consumed, remaining = FEE_STATE.consume_credit_if_any(wallet_address)
+    if consumed:
+        return wallet_address, "", remaining, False
 
     if not fee_tx_hash_raw:
         raise ValueError("No remaining runs. fee_tx_hash is required")
@@ -158,46 +272,46 @@ def _require_fee_payment(payload: dict) -> tuple[str, str, int, bool]:
         raise ValueError("fee_tx_hash must be a valid transaction hash")
     fee_tx_hash = fee_tx_hash_raw.lower()
 
-    with _FEE_STATE_LOCK:
-        if fee_tx_hash in _USED_FEE_TX:
-            raise ValueError("fee_tx_hash was already used")
+    if not FEE_STATE.mark_tx_if_new(fee_tx_hash):
+        raise ValueError("fee_tx_hash was already used")
 
-    tx = _wait_for_transaction(fee_tx_hash)
+    try:
+        tx = _wait_for_transaction(fee_tx_hash)
 
-    tx_from = Web3.to_checksum_address(tx["from"])
-    if tx_from != wallet_address:
-        raise ValueError("fee tx sender does not match wallet_address")
-    if tx.get("chainId") and int(tx["chainId"]) != BASE_SEPOLIA_CHAIN_ID_INT:
-        raise ValueError("fee tx is not on Base Sepolia")
+        tx_from = Web3.to_checksum_address(tx["from"])
+        if tx_from != wallet_address:
+            raise ValueError("fee tx sender does not match wallet_address")
+        if tx.get("chainId") and int(tx["chainId"]) != BASE_SEPOLIA_CHAIN_ID_INT:
+            raise ValueError("fee tx is not on Base Sepolia")
 
-    receipt = _wait_for_receipt(fee_tx_hash)
-    if int(receipt.get("status", 0)) != 1:
-        raise ValueError("fee transaction failed")
+        receipt = _wait_for_receipt(fee_tx_hash)
+        if int(receipt.get("status", 0)) != 1:
+            raise ValueError("fee transaction failed")
 
-    paid_ok = False
-    for log in receipt.get("logs", []):
-        if Web3.to_checksum_address(log["address"]) != OPG_TOKEN_ADDRESS:
-            continue
-        topics = log.get("topics", [])
-        if len(topics) < 3:
-            continue
-        t0 = topics[0].hex().lower()
-        if t0 != TRANSFER_TOPIC:
-            continue
-        from_addr = _topic_addr(topics[1].hex())
-        to_addr = _topic_addr(topics[2].hex())
-        value_wei = _hex_to_int(log.get("data", "0x0"))
-        if from_addr == wallet_address and to_addr == OPG_FEE_RECEIVER and value_wei >= OPG_FEE_WEI:
-            paid_ok = True
-            break
+        paid_ok = False
+        for log in receipt.get("logs", []):
+            if Web3.to_checksum_address(log["address"]) != OPG_TOKEN_ADDRESS:
+                continue
+            topics = log.get("topics", [])
+            if len(topics) < 3:
+                continue
+            t0 = topics[0].hex().lower()
+            if t0 != TRANSFER_TOPIC:
+                continue
+            from_addr = _topic_addr(topics[1].hex())
+            to_addr = _topic_addr(topics[2].hex())
+            value_wei = _hex_to_int(log.get("data", "0x0"))
+            if from_addr == wallet_address and to_addr == OPG_FEE_RECEIVER and value_wei >= OPG_FEE_WEI:
+                paid_ok = True
+                break
 
-    if not paid_ok:
-        raise ValueError("fee payment not found in transaction logs")
+        if not paid_ok:
+            raise ValueError("fee payment not found in transaction logs")
+    except Exception:
+        FEE_STATE.release_tx_mark(fee_tx_hash)
+        raise
 
-    with _FEE_STATE_LOCK:
-        _USED_FEE_TX.add(fee_tx_hash)
-        remaining = RUNS_PER_FEE_TX - 1
-        _WALLET_RUN_CREDITS[wallet_address] = _WALLET_RUN_CREDITS.get(wallet_address, 0) + remaining
+    remaining = FEE_STATE.add_credits(wallet_address, RUNS_PER_FEE_TX - 1)
     return wallet_address, fee_tx_hash, remaining, True
 
 
@@ -222,8 +336,24 @@ def api_ping():
             "fee_receiver": OPG_FEE_RECEIVER,
             "fee_chain_id": BASE_SEPOLIA_CHAIN_ID_HEX,
             "runs_per_fee_tx": RUNS_PER_FEE_TX,
+            "credits_store": FEE_STATE.mode,
         }
     )
+
+
+@app.route("/api/credits")
+def api_credits():
+    wallet_raw = str(request.args.get("wallet") or "").strip()
+    if not wallet_raw:
+        return jsonify({"ok": True, "remaining_runs": 0})
+    try:
+        wallet = Web3.to_checksum_address(wallet_raw)
+        remaining = FEE_STATE.get_credits(wallet)
+        return jsonify({"ok": True, "wallet_address": wallet, "remaining_runs": remaining})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @app.route("/api/ask", methods=["POST"])
