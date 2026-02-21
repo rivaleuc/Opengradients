@@ -20,6 +20,11 @@ const walletBadge = document.getElementById("walletBadge");
 const walletLockOverlay = document.getElementById("walletLockOverlay");
 const walletOverlayBtn = document.getElementById("walletOverlayBtn");
 
+function setMeta(text) {
+  if (!metaBox) return;
+  metaBox.textContent = text;
+}
+
 const BASE_SEPOLIA_CHAIN_ID = "0x14a34";
 const BASE_SEPOLIA_PARAMS = {
   chainId: BASE_SEPOLIA_CHAIN_ID,
@@ -370,10 +375,12 @@ async function boot() {
     state.feeReceiver = String(data.fee_receiver || "").trim();
     state.feeChainId = String(data.fee_chain_id || BASE_SEPOLIA_CHAIN_ID).toLowerCase();
     setStatus(`Ready: ${data.status}`);
-    metaBox.textContent = `Modes: ask, review | Models: ${(data.models || []).join(", ")} | Source: ${data.source_hint || "local path"} | Access: wallet required${feeMetaSuffix()}${walletMetaSuffix()}`;
+    setMeta(
+      `Modes: ask, review | Models: ${(data.models || []).join(", ")} | Source: ${data.source_hint || "local path"} | Access: wallet required${feeMetaSuffix()}${walletMetaSuffix()}`
+    );
   } catch (err) {
     setStatus("Backend unreachable", false);
-    metaBox.textContent = String(err);
+    setMeta(String(err));
   }
   await initWallet();
 }
@@ -407,7 +414,7 @@ async function runAsk() {
 
   syncRemainingRuns(data.remaining_runs);
   setWalletInfo(`Connected on Base Sepolia: ${state.walletAddress} | Credits left: ${state.remainingRuns}`, true);
-  metaBox.textContent = `Mode: ask | Model: ${data.model} | Root: ${data.root}${feeMetaSuffix()}${walletMetaSuffix()}`;
+  setMeta(`Mode: ask | Model: ${data.model} | Root: ${data.root}${feeMetaSuffix()}${walletMetaSuffix()}`);
   renderPlanner(data.planner_files || [], data.planner_focus || "");
   outputBox.textContent = data.answer || "(empty answer)";
   state.lastOutput = outputBox.textContent;
@@ -437,7 +444,9 @@ async function runReview() {
 
   syncRemainingRuns(data.remaining_runs);
   setWalletInfo(`Connected on Base Sepolia: ${state.walletAddress} | Credits left: ${state.remainingRuns}`, true);
-  metaBox.textContent = `Mode: review | Model: ${data.model} | Root: ${data.root} | Target: ${data.target || "working tree"}${feeMetaSuffix()}${walletMetaSuffix()}`;
+  setMeta(
+    `Mode: review | Model: ${data.model} | Root: ${data.root} | Target: ${data.target || "working tree"}${feeMetaSuffix()}${walletMetaSuffix()}`
+  );
   if (data.diff_empty) {
     plannerBox.textContent = "No git diff found for this target.";
     outputBox.textContent = "No diff to review.";
