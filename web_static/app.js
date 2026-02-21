@@ -191,6 +191,36 @@ function encodeErc20Transfer(toAddress, amountWei) {
   return `0x${method}${encodedTo}${encodedAmount}`;
 }
 
+function encodeErc20BalanceOf(ownerAddress) {
+  const method = "70a08231";
+  const clean = String(ownerAddress || "").toLowerCase().replace(/^0x/, "");
+  if (!/^[0-9a-f]{40}$/.test(clean)) {
+    throw new Error("Invalid wallet address.");
+  }
+  return `0x${method}${clean.padStart(64, "0")}`;
+}
+
+function parseHexToBigInt(hexValue) {
+  const clean = String(hexValue || "0x0");
+  return BigInt(clean);
+}
+
+function formatOpgWei(weiValue) {
+  const v = BigInt(weiValue);
+  const whole = v / 10n ** 18n;
+  const frac = (v % 10n ** 18n).toString().padStart(18, "0").slice(0, 4);
+  return frac === "0000" ? `${whole}` : `${whole}.${frac}`;
+}
+
+async function fetchOpgBalanceWei() {
+  const data = encodeErc20BalanceOf(state.walletAddress);
+  const raw = await window.ethereum.request({
+    method: "eth_call",
+    params: [{ to: state.feeToken, data }, "latest"],
+  });
+  return parseHexToBigInt(raw);
+}
+
 async function waitForReceipt(txHash, timeoutMs = 120000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -200,7 +230,9 @@ async function waitForReceipt(txHash, timeoutMs = 120000) {
     });
     if (receipt) {
       if (receipt.status === "0x1") return receipt;
-      throw new Error("Fee transaction failed on-chain.");
+      throw new Error(
+        "Fee transaction failed on-chain. Most likely insufficient OPG balance or token transfer reverted."
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, 2200));
   }
@@ -222,6 +254,23 @@ async function payFeeAndGetTxHash() {
     value: "0x0",
     data: encodeErc20Transfer(state.feeReceiver, state.feeAmountWei),
   };
+
+  const opgBalanceWei = await fetchOpgBalanceWei();
+  if (opgBalanceWei < state.feeAmountWei) {
+    throw new Error(
+      `Insufficient OPG balance. Need ${state.feeAmountOpg} OPG, wallet has ${formatOpgWei(opgBalanceWei)} OPG.`
+    );
+  }
+
+  try {
+    await window.ethereum.request({
+      method: "eth_estimateGas",
+      params: [tx],
+    });
+  } catch (err) {
+    const msg = String(err?.message || err);
+    throw new Error(`Fee transfer would fail before send: ${msg}`);
+  }
 
   setStatus(`Paying ${state.feeAmountOpg} OPG for ${state.runsPerFeeTx} runs...`, true);
   const txHash = await window.ethereum.request({
