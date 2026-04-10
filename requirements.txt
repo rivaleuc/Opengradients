@@ -1,4 +1,4 @@
-opengradient>=0.7.1
+opengradient>=0.9.9
 flask
 flask-cors
 requests

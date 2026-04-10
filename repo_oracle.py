@@ -28,14 +28,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
+import asyncio
+
 import opengradient as og
 import requests
 
 
 DEFAULT_MODEL_PRIORITY = [
-    ("GPT_4O", og.TEE_LLM.GPT_4O),
-    ("CLAUDE_3_5_HAIKU", og.TEE_LLM.CLAUDE_3_5_HAIKU),
-    ("GEMINI_2_0_FLASH", og.TEE_LLM.GEMINI_2_0_FLASH),
+    ("GPT_4_1", og.TEE_LLM.GPT_4_1),
+    ("CLAUDE_HAIKU_4_5", og.TEE_LLM.CLAUDE_HAIKU_4_5),
+    ("GEMINI_2_5_FLASH", og.TEE_LLM.GEMINI_2_5_FLASH),
 ]
 
 EXCLUDE_GLOBS = [
@@ -99,7 +101,7 @@ class PlannerResult:
 
 @dataclass
 class OracleClient:
-    client: og.Client
+    client: og.LLM
     model_name: str
     model: Any
 
@@ -305,12 +307,7 @@ def init_oracle_client(force_model: Optional[str] = None) -> OracleClient:
             "~/.opengradient_config.json private_key"
         )
 
-    client = og.Client(private_key=private_key)
-    if hasattr(client.llm, "ensure_opg_approval"):
-        try:
-            client.llm.ensure_opg_approval(opg_amount=1.0)
-        except Exception as exc:
-            eprint(f"[warn] ensure_opg_approval failed: {exc}")
+    client = og.LLM(private_key=private_key)
 
     if force_model:
         for name, model in DEFAULT_MODEL_PRIORITY:
@@ -320,7 +317,7 @@ def init_oracle_client(force_model: Optional[str] = None) -> OracleClient:
 
     for name, model in DEFAULT_MODEL_PRIORITY:
         try:
-            result = client.llm.chat(
+            result = asyncio.run(client.chat(
                 model=model,
                 messages=[
                     {"role": "system", "content": "Reply with READY only."},
@@ -328,9 +325,9 @@ def init_oracle_client(force_model: Optional[str] = None) -> OracleClient:
                 ],
                 max_tokens=10,
                 temperature=0.0,
-                x402_settlement_mode=og.x402SettlementMode.SETTLE_BATCH,
-            )
-            content = ((result.chat_output or {}).get("content") or "").strip().upper()
+                x402_settlement_mode=og.x402SettlementMode.BATCH_HASHED,
+            ))
+            content = (result.choices[0].message.content or "").strip().upper()
             if "READY" in content:
                 return OracleClient(client=client, model_name=name, model=model)
         except Exception:
@@ -342,7 +339,7 @@ def init_oracle_client(force_model: Optional[str] = None) -> OracleClient:
 
 
 def chat(oracle: OracleClient, system: str, user: str, max_tokens: int = 900, temperature: float = 0.2) -> str:
-    result = oracle.client.llm.chat(
+    result = asyncio.run(oracle.client.chat(
         model=oracle.model,
         messages=[
             {"role": "system", "content": system},
@@ -350,9 +347,9 @@ def chat(oracle: OracleClient, system: str, user: str, max_tokens: int = 900, te
         ],
         max_tokens=max_tokens,
         temperature=temperature,
-        x402_settlement_mode=og.x402SettlementMode.SETTLE_BATCH,
-    )
-    return ((result.chat_output or {}).get("content") or "").strip()
+        x402_settlement_mode=og.x402SettlementMode.BATCH_HASHED,
+    ))
+    return (result.choices[0].message.content or "").strip()
 
 
 def matches_any(path_text: str, patterns: Sequence[str]) -> bool:
